@@ -42,8 +42,9 @@ async def launch_browser(
     kwargs: dict = {
         "headless": headless,
         "os": os_choice,
-        "window": (window_width, window_height),
     }
+    # NOTE: camoufox 0.5.4 + browserforge 1.2.4 crash with window= on linux
+    # ("No headers based on this input"). Skip window — let browser use default.
     if proxy:
         kwargs["proxy"] = {"server": proxy}
         log(f"   🌐 Using proxy: {proxy}")
