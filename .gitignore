@@ -1,0 +1,82 @@
+# ═══════════════════════════════════════════════════
+# Python
+# ═══════════════════════════════════════════════════
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# ═══════════════════════════════════════════════════
+# Environment & Secrets
+# ═══════════════════════════════════════════════════
+.env
+.env.*
+!.env.example
+
+# ═══════════════════════════════════════════════════
+# Credentials & Data (sensitive!)
+# ═══════════════════════════════════════════════════
+accounts.json
+accounts/
+*_accounts.json
+grok_accounts.json
+credentials*.json
+*.sqlite
+*.db
+*.pem
+*.key
+*.p12
+*.pfx
+.2captcha_key
+.cf_api_token
+cf_api_token
+.api_secret
+*.cookie
+*.cookies
+secrets/
+
+# ═══════════════════════════════════════════════════
+# Logs & Screenshots (generated artifacts)
+# ═══════════════════════════════════════════════════
+run_*.log
+screenshots/
+*.png
+!docs/*.png
+!examples/*.png
+
+# ═══════════════════════════════════════════════════
+# IDE & Editor
+# ═══════════════════════════════════════════════════
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ═══════════════════════════════════════════════════
+# Testing & Coverage
+# ═══════════════════════════════════════════════════
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ═══════════════════════════════════════════════════
+# Backup files
+# ═══════════════════════════════════════════════════
+*.bak
+*.orig
+_archive/
