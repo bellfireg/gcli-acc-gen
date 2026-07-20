@@ -32,7 +32,11 @@ async def launch_browser(
     """
     from camoufox.async_api import AsyncCamoufox
 
-    os_choice = random.choice(["windows", "macos", "linux"])
+    # Force OS match host — Camoufox crashes generating macos/windows headers
+    # on a linux box ("No headers based on this input"). Ponytail: match host.
+    import platform as _pf
+    _host = _pf.system().lower()
+    os_choice = "macos" if _host == "darwin" else "windows" if _host == "windows" else "linux"
     log(f"   🦊 Launching Camoufox (headless={headless}, os={os_choice})...")
 
     kwargs: dict = {
