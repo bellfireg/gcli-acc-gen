@@ -104,7 +104,7 @@ class TempMailProvider(ABC):
 
 
 class CloudflareProvider(TempMailProvider):
-    """Cloudflare Worker-based temp mail (path-secret gated catch-all mailbox).
+    """Cloudflare Worker-based temp mail (bluk-cf contract).
 
     Endpoints (all gated by /<API_SECRET>/api/...):
         POST /<secret>/api/new_address    → mint 16-char localpart @ DOMAIN

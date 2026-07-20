@@ -17,35 +17,26 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 import requests
 
-import os
-
 from .browser.camoufox import launch_browser
 from .utils.logger import log, log_err, log_ok
 
-# Defaults from env only — never hardcode host/password in a public repo
+# Default 9Router config — override via env vars, NEVER hardcode credentials
 NINEROUTER_DEFAULT_HOST = os.environ.get("NINEROUTER_HOST", "http://localhost:20128")
 NINEROUTER_DEFAULT_PASSWORD = os.environ.get("NINEROUTER_PASSWORD", "")
 
 
 def ninerouter_login(
-    base: str | None = None,
-    password: str | None = None,
+    base: str = NINEROUTER_DEFAULT_HOST,
+    password: str = NINEROUTER_DEFAULT_PASSWORD,
 ) -> dict:
-    """Login to 9Router, return cookie jar.
-
-    Requires NINEROUTER_PASSWORD (env) or an explicit password= argument.
-    """
-    base = base or NINEROUTER_DEFAULT_HOST
-    password = password if password is not None else NINEROUTER_DEFAULT_PASSWORD
-    if not password:
-        raise RuntimeError(
-            "9Router password not set. Export NINEROUTER_PASSWORD or pass password=."
-        )
+    """Login to 9Router, return cookie jar."""
     s = requests.Session()
     r = s.post(
         f"{base}/api/auth/login",
@@ -68,6 +59,46 @@ def trigger_device_code(nr: dict) -> dict:
     log_ok(f"   ✅ Device code triggered: {d.get('user_code')}")
     log(f"   → verification URL: {d.get('verification_uri_complete')}")
     return d
+
+
+def poll_ninerouter(nr: dict, device_code: str, code_verifier: str, timeout: int = 60) -> bool:
+    """POST /api/oauth/grok-cli/poll to exchange device code for tokens.
+
+    9Router grok-cli does NOT auto-poll — client must trigger this after
+    the user clicks Allow in the browser. Returns True if token stored.
+    """
+    s = nr["session"]
+    deadline = time.time() + timeout
+    interval = 5
+    while time.time() < deadline:
+        try:
+            r = s.post(
+                f"{nr['base']}/api/oauth/grok-cli/poll",
+                json={"deviceCode": device_code, "codeVerifier": code_verifier},
+                timeout=15,
+            )
+            d = r.json()
+        except Exception as e:
+            log_err(f"   poll request failed: {e}")
+            time.sleep(interval)
+            continue
+
+        if d.get("success"):
+            log_ok(f"   ✅ 9Router stored token")
+            return True
+        err = d.get("error", "")
+        if err == "authorization_pending":
+            time.sleep(interval)
+            continue
+        if err in ("expired_token", "access_denied", "slow_down"):
+            log_err(f"   poll error: {err} — {d.get('errorDescription','')}")
+            return False
+        # Unknown error — retry
+        log(f"   poll: {d.get('error','?')} — retrying…")
+        time.sleep(interval)
+
+    log_err(f"   poll timeout ({timeout}s)")
+    return False
 
 
 async def authorize_device(
@@ -138,16 +169,9 @@ async def authorize_device(
         except Exception:
             log("   → no Continue button")
 
-        # Check if we landed directly on Authorize screen (session valid)
-        try:
-            allow_btn = page.locator('button:has-text("Allow")')
-            if await allow_btn.first.is_visible(timeout=3000):
-                await allow_btn.first.click(timeout=10000)
-                log_ok("   ✅ clicked Allow (no login needed — session valid)")
-                await asyncio.sleep(3)
-                return True
-        except Exception:
-            pass
+        # NOTE: Do NOT early-return on "Allow" button — signup session is NOT
+        # OAuth-authorized. We must always go through explicit login flow
+        # (email + password + login OTP) for 9Router to receive the callback.
 
         # Step 2: Sign out if already logged in as another account
         try:
@@ -215,23 +239,39 @@ async def authorize_device(
             log("   ⚠️ no real password — relying on injected session only")
 
         # Step 4: Authorize Grok Build — click "Allow"
-        try:
-            allow_btn = page.locator('button:has-text("Allow")')
-            await allow_btn.first.wait_for(state="visible", timeout=30000)
-            await allow_btn.first.click(timeout=10000)
-            log_ok("   ✅ clicked Allow — device authorized")
-            await asyncio.sleep(3)
-            return True
-        except Exception as e:
-            log_err(f"   ❌ Allow button not found: {e}")
+        # After login, Grok may redirect back to device verification page with
+        # "Continue" button. Click it again, then wait for Allow.
+        for attempt in range(3):
             try:
-                state = await page.evaluate(
-                    '() => JSON.stringify({url: location.href, h1: document.querySelector("h1")?.textContent, body: document.body.innerText.substring(0,500)})'
-                )
-                log_err(f"   state: {state}")
+                allow_btn = page.locator('button:has-text("Allow")')
+                if await allow_btn.first.is_visible(timeout=5000):
+                    await allow_btn.first.click(timeout=10000)
+                    log_ok("   ✅ clicked Allow — device authorized")
+                    await asyncio.sleep(3)
+                    return True
             except Exception:
                 pass
-            return False
+            # Maybe back on device verification page — click Continue
+            try:
+                continue_btn2 = page.locator('button:has-text("Continue")')
+                if await continue_btn2.first.is_visible(timeout=3000):
+                    await continue_btn2.first.click(timeout=5000)
+                    log(f"   → clicked Continue (attempt {attempt+1}, post-login)")
+                    await asyncio.sleep(5)
+                    continue
+            except Exception:
+                pass
+            await asyncio.sleep(3)
+
+        log_err("   ❌ Allow button not found after retries")
+        try:
+            state = await page.evaluate(
+                '() => JSON.stringify({url: location.href, h1: document.querySelector("h1")?.textContent, body: document.body.innerText.substring(0,500)})'
+            )
+            log_err(f"   state: {state}")
+        except Exception:
+            pass
+        return False
 
 
 async def _poll_login_otp(mail, email: str, timeout: int = 90) -> str:
@@ -314,19 +354,20 @@ async def register_account_to_ninerouter(
         log_err(f"   ❌ Authorization failed for {email}")
         return False
 
-    log("   ⏳ waiting 10s for 9Router to poll + store…")
-    await asyncio.sleep(10)
+    # 9Router grok-cli does NOT auto-poll — client must POST /poll to exchange
+    # the device code for tokens after the user clicks Allow in browser.
+    log("   ⏳ polling 9Router to exchange device code for tokens…")
+    stored = poll_ninerouter(
+        nr,
+        device_code=dc["device_code"],
+        code_verifier=dc["codeVerifier"],
+        timeout=60,
+    )
+    if not stored:
+        log_err(f"   ❌ 9Router did not store token for {email}")
+        return False
 
-    s = nr["session"]
-    r = s.get(f"{nr['base']}/api/providers", timeout=15)
-    if r.ok:
-        conns = r.json()
-        if isinstance(conns, list):
-            found = [c for c in conns if c.get("email") == email and c.get("provider") == "grok-cli"]
-            if found:
-                log_ok(f"   ✅ Verified: {email} registered as grok-cli in 9Router")
-                return True
-            log(f"   ⚠️  connection not yet visible (may still be polling)")
+    log_ok(f"   ✅ Verified: {email} registered as grok-cli in 9Router")
     return True
 
 
@@ -367,7 +408,7 @@ def main() -> int:
     p.add_argument("--mailbox-secret", default=os.environ.get("CF_MAILBOX_SECRET", ""))
     p.add_argument("--worker-url", default=os.environ.get("WORKER_URL", ""))
     args = p.parse_args()
-    return asyncio.run(run(args.accounts, headless=args.headless, only=args.only, mailbox_secret=args.mailbox_secret, worker_url=args.worker_url or None))
+    return asyncio.run(run(args.accounts, headless=args.headless, only=args.only, mailbox_secret=args.mailbox_secret, worker_url=args.worker_url))
 
 
 if __name__ == "__main__":

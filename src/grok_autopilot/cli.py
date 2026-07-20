@@ -86,7 +86,7 @@ def main() -> int:
                         nr=nr,
                         headless=args.headless,
                         mailbox_secret=_os.environ.get("CF_MAILBOX_SECRET"),
-                        worker_url=_os.environ.get("WORKER_URL") or None,
+                        worker_url=_os.environ.get("WORKER_URL", ""),
                     )):
                         nr_ok += 1
                 except Exception as e:
